@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<h2>This project: lobster</h2>
+<h2>This project: yabby</h2>
 
 <br>
 
