@@ -19,6 +19,22 @@ type ChallengeData struct {
 	Difficulty int    `json:"difficulty"`
 }
 
+type Source struct {
+	File string `json:"file"`
+}
+
+type Track struct {
+	File    string `json:"file"`
+	Label   string `json:"label"`
+	Kind    string `json:"kind"`
+	Default bool   `json:"default"`
+}
+
+type MediaData struct {
+	Sources []Source `json:"sources"`
+	Tracks  []Track  `json:"tracks"`
+}
+
 func extractFromEmbed(embedLink string) MediaData {
 	var ChallengeData ChallengeData
 	getJSON(fmt.Sprintf("%s/challenge", DECODEURL), &ChallengeData)
@@ -39,7 +55,9 @@ func solvePow(payload string, difficulty int) string {
 	nonce := 0
 	startTime := time.Now()
 
-	fmt.Printf("Solving PoW challenge (Difficulty %d): %s...\n", difficulty, challenge)
+	if DEBUG {
+		fmt.Printf("Solving PoW challenge (Difficulty %d): %s...\n", difficulty, challenge)
+	}
 
 	for {
 		text := []byte(fmt.Sprintf("%s%d", challenge, nonce))
@@ -49,10 +67,21 @@ func solvePow(payload string, difficulty int) string {
 
 		if strings.HasPrefix(hashVal, prefix) {
 			elapsed := time.Since(startTime).Seconds()
-			fmt.Printf("PoW Solved. Nonce: %d, Hash: %s, Time: %.4fs\n", nonce, hashVal, elapsed)
+			if DEBUG {
+				fmt.Printf("PoW Solved. Nonce: %d, Hash: %s, Time: %.4fs\n", nonce, hashVal, elapsed)
+			}
 			return strconv.Itoa(nonce)
 		}
 
 		nonce++
 	}
+}
+
+func findLanguage(data MediaData, language string) int {
+	for i, track := range data.Tracks {
+		if track.Label == language {
+			return i
+		}
+	}
+	return -1
 }

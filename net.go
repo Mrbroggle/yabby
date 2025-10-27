@@ -5,28 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
 )
-
-type Source struct {
-	File string `json:"file"`
-}
-
-type Track struct {
-	File    string `json:"file"`
-	Label   string `json:"label"`
-	Kind    string `json:"kind"`
-	Default bool   `json:"default"`
-}
-
-type MediaData struct {
-	Sources []Source `json:"sources"`
-	Tracks  []Track  `json:"tracks"`
-}
 
 func getM3U8(json MediaData) (string, error) {
 	for _, element := range json.Sources {
@@ -70,6 +55,16 @@ func httpGet(uri string) *http.Response {
 	if res.StatusCode != 200 {
 		log.Fatalf("status code error: %d %s", res.StatusCode, res.Status)
 	}
+
+	if DEBUG {
+		bodyBytes, err := io.ReadAll(res.Body)
+		if err != nil {
+			log.Fatalf("error reading response body for logging: %v", err)
+		}
+		fmt.Println(string(bodyBytes))
+		res.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	}
+
 	return res
 }
 

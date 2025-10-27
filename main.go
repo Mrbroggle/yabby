@@ -1,18 +1,22 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"net/http/cookiejar"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
 )
 
+var persistentClient *http.Client
+
 func main() {
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Println(err)
+	}
+
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		log.Fatalf("Failed to create cookie jar: %v", err)
@@ -23,8 +27,7 @@ func main() {
 		Timeout: 120 * time.Second,
 	}
 
-	media := search(strings.ReplaceAll(os.Args[len(os.Args)-1], " ", "-"))
-	flags()
+	media := search(SEARCHSTRING)
 
 	if RICHPRESENCE {
 		RPCSetup()
@@ -72,18 +75,20 @@ func main() {
 	if RICHPRESENCE {
 		RPC(media)
 	}
-
 	title := fmt.Sprintf(`--force-media-title=%s`, episode.name)
-	cmd := exec.Command("mpv", link, title)
+
+	var subs string
+	if !NOSUBS {
+		subslink := mediaJSON.Tracks[findLanguage(mediaJSON, LANGUAGE)].File
+		subs = fmt.Sprintf(`--sub-file=%s`, subslink)
+
+	}
+	if DEBUG {
+		fmt.Printf(fmt.Sprintf("Running: mpv %s %s %s", link, title, subs))
+	}
+	cmd := exec.Command("mpv", link, title, subs)
 	mpvErr := cmd.Run()
 	if mpvErr != nil {
 		panic("Unable to spawn MPV")
 	}
-}
-
-func flags() {
-	flag.BoolVar(&DEBUG, "X", false, "Enables debug output")
-	flag.BoolVar(&RICHPRESENCE, "R", false, "Enables discord rich presence")
-
-	flag.Parse()
 }
