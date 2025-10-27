@@ -2,14 +2,18 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/cookiejar"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,11 +23,13 @@ import (
 )
 
 var (
-	BASE         = "https://flixhq.to"
-	PROVIDER     = "Vidcloud"
-	DEBUG        = false
-	DECODEURL    = "https://dec.eatmynerds.live/?url="
-	RICHPRESENCE = false
+	BASE             = "https://flixhq.to"
+	PROVIDER         = "Vidcloud"
+	DEBUG            = false
+	DECODEURL        = "https://dec.eatmynerds.live"
+	RICHPRESENCE     = false
+	QUALITY          = "720"
+	persistentClient *http.Client
 )
 
 type media struct {
@@ -43,8 +49,22 @@ type episode struct {
 	id   string
 }
 
+type EmbedData struct {
+	Link string `json:"link"`
+}
+
 func main() {
-	media := search(os.Args[len(os.Args)-1])
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		log.Fatalf("Failed to create cookie jar: %v", err)
+	}
+
+	persistentClient = &http.Client{
+		Jar:     jar,
+		Timeout: 120 * time.Second,
+	}
+
+	media := search(strings.ReplaceAll(os.Args[len(os.Args)-1], " ", "-"))
 	flags()
 
 	if RICHPRESENCE {
@@ -54,6 +74,7 @@ func main() {
 	if DEBUG {
 		fmt.Println(media)
 	}
+
 	var episode episode
 	if media.tv {
 		season := chooseSeason(media)
@@ -68,19 +89,23 @@ func main() {
 		fmt.Println(episode)
 	}
 
-	embedLink := getEmbed(episode)
+	var EmbedData EmbedData
+	getJSON(fmt.Sprintf("%s/ajax/episode/sources/%s", BASE, episode.id), &EmbedData)
 
 	if DEBUG {
-		fmt.Println(embedLink)
+		fmt.Println(EmbedData.Link)
 	}
 
-	mediaJSON := extractFromEmbed(embedLink)
+	mediaJSON := extractFromEmbed(EmbedData.Link)
 
 	if DEBUG {
 		fmt.Println(mediaJSON)
 	}
 
 	m3u8Link, err := getM3U8(mediaJSON)
+
+	link := strings.ReplaceAll(m3u8Link, "/playlist.m3u8", fmt.Sprintf("/%s/index.m3u8", QUALITY))
+
 	if err != nil {
 		panic(err)
 	}
@@ -90,7 +115,7 @@ func main() {
 	}
 
 	title := fmt.Sprintf(`--force-media-title=%s`, episode.name)
-	cmd := exec.Command("mpv", m3u8Link, title)
+	cmd := exec.Command("mpv", link, title)
 	mpvErr := cmd.Run()
 	if mpvErr != nil {
 		panic("Unable to spawn MPV")
@@ -256,12 +281,8 @@ func getMovieEpisode(media media) episode {
 	}
 }
 
-type EmbedData struct {
-	Link string `json:"link"`
-}
-
-func getEmbed(episode episode) string {
-	res := httpGet(fmt.Sprintf("%s/ajax/episode/sources/%s", BASE, episode.id))
+func getJSON(uri string, target any) {
+	res := httpGet(uri)
 	defer res.Body.Close()
 
 	buf := new(bytes.Buffer)
@@ -269,20 +290,16 @@ func getEmbed(episode episode) string {
 		panic("Error reading embed response body:")
 	}
 
-	var data EmbedData
-
-	jsonErr := json.Unmarshal(buf.Bytes(), &data)
+	jsonErr := json.Unmarshal(buf.Bytes(), target)
 	if jsonErr != nil {
 		log.Fatal(jsonErr)
 	}
-	return data.Link
 }
 
 type Source struct {
 	File string `json:"file"`
 }
 
-// Track represents an element in the "tracks" array
 type Track struct {
 	File    string `json:"file"`
 	Label   string `json:"label"`
@@ -290,34 +307,59 @@ type Track struct {
 	Default bool   `json:"default"`
 }
 
-// MediaData represents the top-level structure of the JSON
 type MediaData struct {
 	Sources []Source `json:"sources"`
 	Tracks  []Track  `json:"tracks"`
 }
 
+type ChallengeData struct {
+	Payload    string `json:"payload"`
+	Signature  string `json:"signature"`
+	Difficulty int    `json:"difficulty"`
+}
+
 func extractFromEmbed(embedLink string) MediaData {
-	res := httpGet(fmt.Sprintf("%s%s", DECODEURL, embedLink))
-	defer res.Body.Close()
+	var ChallengeData ChallengeData
+	getJSON(fmt.Sprintf("%s/challenge", DECODEURL), &ChallengeData)
 
-	buf := new(bytes.Buffer)
-	if _, err := buf.ReadFrom(res.Body); err != nil {
-		panic("Error reading embed response body:")
+	var MediaData MediaData
+
+	nonce := solvePow(ChallengeData.Payload, ChallengeData.Difficulty)
+	getJSON(fmt.Sprintf("%s/?url=%s&_debug=true&payload=%s&signature=%s&nonce=%s", DECODEURL, embedLink, ChallengeData.Payload, ChallengeData.Signature, nonce), &MediaData)
+	return MediaData
+}
+
+func solvePow(payload string, difficulty int) string {
+	parts := strings.Split(payload, ".")
+	challenge := parts[0]
+
+	prefix := strings.Repeat("0", difficulty)
+
+	nonce := 0
+	startTime := time.Now()
+
+	fmt.Printf("Solving PoW challenge (Difficulty %d): %s...\n", difficulty, challenge)
+
+	for {
+		text := []byte(fmt.Sprintf("%s%d", challenge, nonce))
+
+		hashBytes := sha256.Sum256(text)
+		hashVal := hex.EncodeToString(hashBytes[:])
+
+		if strings.HasPrefix(hashVal, prefix) {
+			elapsed := time.Since(startTime).Seconds()
+			fmt.Printf("PoW Solved. Nonce: %d, Hash: %s, Time: %.4fs\n", nonce, hashVal, elapsed)
+			return strconv.Itoa(nonce)
+		}
+
+		nonce++
 	}
-
-	var data MediaData
-
-	jsonErr := json.Unmarshal(buf.Bytes(), &data)
-	if jsonErr != nil {
-		log.Fatal(jsonErr)
-	}
-	return data
 }
 
 func getM3U8(json MediaData) (string, error) {
 	for _, element := range json.Sources {
 		file := element.File
-		if strings.Contains(file, "index") {
+		if strings.Contains(file, "playlist") {
 			return file, nil
 		}
 	}
@@ -339,7 +381,17 @@ func httpGet(uri string) *http.Response {
 	if DEBUG {
 		fmt.Printf("Gettting: %s\n", uri)
 	}
-	res, err := http.Get(uri)
+
+	req, err := http.NewRequest("GET", uri, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	req.Header.Set("User-Agent", "curl/69.420.0")
+	res, err := persistentClient.Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
